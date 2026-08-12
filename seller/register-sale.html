@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f0f13" />
+  <title>판매 등록 - SH 라꾸 매니저</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="manifest" href="/manifest.json" />
+</head>
+<body>
+  <div class="app-shell">
+    <div class="page" id="page-content">
+      <p class="text-secondary">불러오는 중...</p>
+    </div>
+  </div>
+
+  <script type="module">
+    import { requireAuth } from '/js/auth.js';
+    import { supabase } from '/js/supabaseClient.js';
+    import { won, renderSellerNav, renderHeader, showToast, bindThousandsInput, rawNumber, todayStr } from '/js/ui.js';
+
+    const page = document.getElementById('page-content');
+    let inventory = [];
+    let myProfile = null;
+
+    async function init() {
+      myProfile = await requireAuth('seller');
+      if (!myProfile) return;
+
+      const { data, error } = await supabase
+        .from('seller_inventory')
+        .select('*, products(id, name, commission_per_unit)')
+        .eq('seller_id', myProfile.id)
+        .gt('quantity', 0);
+
+      if (error) {
+        page.innerHTML = `<p class="error-text">불러오기 실패: ${error.message}</p>`;
+        return;
+      }
+      inventory = data;
+      render();
+    }
+
+    function render() {
+      page.innerHTML = `
+        ${renderHeader('판매 등록', '실제 판매를 완료한 후 등록해주세요')}
+
+        <div class="card">
+          <form id="sale-form">
+            <div class="field">
+              <label>상품</label>
+              <select id="f-product" required>
+                <option value="">선택</option>
+                ${inventory.map(i => `<option value="${i.product_id}" data-qty="${i.quantity}" data-commission="${i.products.commission_per_unit}">${i.products.name} (보유 ${i.quantity}개)</option>`).join('')}
+              </select>
+            </div>
+            <div class="field">
+              <label>판매수량</label>
+              <input type="number" id="f-qty" min="1" required placeholder="예: 3" />
+            </div>
+            <div class="field">
+              <label>실제 판매금액</label>
+              <input type="text" inputmode="numeric" id="f-amount" required placeholder="예: 300,000" />
+            </div>
+            <div class="field">
+              <label>판매일</label>
+              <input type="date" id="f-date" required value="${todayStr()}" />
+            </div>
+            <div class="field">
+              <label>메모 (선택)</label>
+              <input type="text" id="f-memo" placeholder="선택 입력" />
+            </div>
+
+            <div id="preview" class="card" style="background: var(--accent-dim); border-color: var(--accent); display: none; margin-bottom: 14px;">
+              <div class="flex-between" style="padding: 3px 0;">
+                <span style="color: var(--accent-text); font-size: 12px;">내 수수료</span>
+                <span id="prev-commission" class="text-mono" style="font-size: 12px; font-weight: 600;"></span>
+              </div>
+              <div class="flex-between" style="padding: 3px 0;">
+                <span style="color: var(--accent-text); font-size: 12px;">관리자 정산금</span>
+                <span id="prev-settlement" class="text-mono" style="font-size: 12px; font-weight: 600;"></span>
+              </div>
+            </div>
+
+            <p class="error-text" id="form-error"></p>
+            <button type="submit" class="btn btn-primary" id="submit-btn">판매 등록</button>
+          </form>
+        </div>
+      `;
+
+      document.querySelector('.app-shell').insertAdjacentHTML('beforeend', renderSellerNav('register'));
+
+      bindThousandsInput(document.getElementById('f-amount'));
+      document.getElementById('f-qty').addEventListener('input', updatePreview);
+      document.getElementById('f-amount').addEventListener('input', updatePreview);
+      document.getElementById('f-product').addEventListener('change', updatePreview);
+      document.getElementById('sale-form').addEventListener('submit', onSubmit);
+    }
+
+    function updatePreview() {
+      const select = document.getElementById('f-product');
+      const opt = select.options[select.selectedIndex];
+      const qty = Number(document.getElementById('f-qty').value || 0);
+      const preview = document.getElementById('preview');
+
+      if (!opt || !opt.dataset.commission || !qty) { preview.style.display = 'none'; return; }
+
+      const commission = Number(opt.dataset.commission);
+      const amount = Number(rawNumber(document.getElementById('f-amount')));
+      const totalCommission = commission * qty;
+      const settlement = amount - totalCommission;
+
+      document.getElementById('prev-commission').textContent = won(totalCommission);
+      document.getElementById('prev-settlement').textContent = won(settlement);
+      preview.style.display = 'block';
+    }
+
+    async function onSubmit(e) {
+      e.preventDefault();
+      const errEl = document.getElementById('form-error');
+      const btn = document.getElementById('submit-btn');
+      errEl.textContent = '';
+
+      const select = document.getElementById('f-product');
+      const opt = select.options[select.selectedIndex];
+      const qty = Number(document.getElementById('f-qty').value);
+      const availableQty = Number(opt?.dataset.qty || 0);
+
+      if (qty > availableQty) {
+        errEl.textContent = `보유 재고(${availableQty}개)보다 많이 판매할 수 없습니다.`;
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>';
+
+      const { error } = await supabase.rpc('register_sale', {
+        p_seller_id: myProfile.id,
+        p_product_id: select.value,
+        p_quantity: qty,
+        p_sale_amount: Number(rawNumber(document.getElementById('f-amount'))),
+        p_sale_date: document.getElementById('f-date').value,
+        p_memo: document.getElementById('f-memo').value.trim() || null,
+      });
+
+      if (error) {
+        errEl.textContent = error.message.includes('부족') ? error.message : '등록 실패: ' + error.message;
+        btn.disabled = false;
+        btn.textContent = '판매 등록';
+        return;
+      }
+
+      showToast('판매가 등록되었습니다', 'success');
+      setTimeout(() => { window.location.href = '/seller/sales.html'; }, 600);
+    }
+
+    init();
+  </script>
+</body>
+</html>

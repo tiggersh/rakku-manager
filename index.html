@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f0f13" />
+  <title>SH 라꾸 매니저</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+</head>
+<body>
+  <div class="center-screen">
+    <div style="width: 100%; max-width: 340px;">
+
+      <div style="text-align: center; margin-bottom: 40px;">
+        <div style="font-size: 34px; font-weight: 800; letter-spacing: -0.03em; color: var(--text);">
+          <span style="color: var(--text-secondary); font-size: 20px; font-weight: 700; display: block; margin-bottom: 2px;">SH</span>
+          라꾸<span style="color: var(--accent-text);">매니저</span>
+        </div>
+        <p class="text-secondary" style="margin-top: 8px; font-size: 14px;">
+          위탁판매 재고·정산 관리
+        </p>
+      </div>
+
+      <form id="login-form" class="card">
+        <div class="field">
+          <label for="email">아이디 (이메일)</label>
+          <input id="email" type="email" autocomplete="username" required placeholder="you@example.com" />
+        </div>
+        <div class="field">
+          <label for="password">비밀번호</label>
+          <input id="password" type="password" autocomplete="current-password" required placeholder="••••••••" />
+        </div>
+
+        <p id="error-msg" class="error-text"></p>
+
+        <button type="submit" id="submit-btn" class="btn btn-primary">
+          로그인
+        </button>
+      </form>
+
+    </div>
+  </div>
+
+  <script type="module">
+    import { login, getCurrentProfile } from '/js/auth.js';
+    import { supabase } from '/js/supabaseClient.js';
+
+    const form = document.getElementById('login-form');
+    const errorMsg = document.getElementById('error-msg');
+    const submitBtn = document.getElementById('submit-btn');
+
+    // 이미 로그인 되어 있으면 바로 홈으로
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        const profile = await getCurrentProfile();
+        if (profile) {
+          window.location.href = profile.role === 'admin'
+            ? '/admin/dashboard.html'
+            : '/seller/dashboard.html';
+        }
+      }
+    })();
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorMsg.textContent = '';
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = '<span class="spinner"></span>';
+
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+
+      try {
+        await login(email, password);
+        const profile = await getCurrentProfile();
+        if (!profile) throw new Error('프로필 정보를 찾을 수 없습니다. 관리자에게 문의하세요.');
+
+        window.location.href = profile.role === 'admin'
+          ? '/admin/dashboard.html'
+          : '/seller/dashboard.html';
+      } catch (err) {
+        errorMsg.textContent = '로그인 실패: 이메일 또는 비밀번호를 확인해주세요.';
+        submitBtn.disabled = false;
+        submitBtn.textContent = '로그인';
+      }
+    });
+  </script>
+</body>
+</html>

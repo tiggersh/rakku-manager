@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f0f13" />
+  <title>판매내역 - SH 라꾸 매니저</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="manifest" href="/manifest.json" />
+</head>
+<body>
+  <div class="app-shell">
+    <div class="page" id="page-content">
+      <p class="text-secondary">불러오는 중...</p>
+    </div>
+  </div>
+
+  <script type="module">
+    import { requireAuth } from '/js/auth.js';
+    import { supabase } from '/js/supabaseClient.js';
+    import { won, renderSellerNav, renderHeader } from '/js/ui.js';
+
+    const page = document.getElementById('page-content');
+
+    async function init() {
+      const profile = await requireAuth('seller');
+      if (!profile) return;
+
+      const { data: sales, error } = await supabase
+        .from('sales')
+        .select('*, products(name), settlements(status)')
+        .eq('seller_id', profile.id)
+        .order('sale_date', { ascending: false })
+        .limit(50);
+
+      if (error) {
+        page.innerHTML = `<p class="error-text">불러오기 실패: ${error.message}</p>`;
+        return;
+      }
+
+      const { data: openSettlements } = await supabase
+        .from('settlements')
+        .select('total_due, paid_amount')
+        .eq('seller_id', profile.id)
+        .in('status', ['pending', 'partial']);
+
+      const active = sales.filter(s => s.status === 'active');
+      const totalAmount = active.reduce((sum, s) => sum + Number(s.sale_amount), 0);
+      const totalCommission = active.reduce((sum, s) => sum + Number(s.total_commission), 0);
+      const unassigned = active.filter(s => !s.settlement_id).reduce((sum, s) => sum + Number(s.admin_settlement_amount), 0);
+      const openOwed = (openSettlements || []).reduce((sum, r) => sum + (Number(r.total_due) - Number(r.paid_amount)), 0);
+      const unsettled = unassigned + openOwed;
+
+      page.innerHTML = `
+        ${renderHeader('판매내역', `최근 ${sales.length}건`)}
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px;">
+          <div class="card">
+            <div class="text-secondary" style="font-size: 12px;">총 판매금액</div>
+            <div class="text-mono" style="font-size: 17px; font-weight: 700; margin-top: 4px;">${won(totalAmount)}</div>
+          </div>
+          <div class="card">
+            <div class="text-secondary" style="font-size: 12px;">내 총 수수료</div>
+            <div class="text-mono" style="font-size: 17px; font-weight: 700; margin-top: 4px; color: var(--success);">${won(totalCommission)}</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom: 16px; background: var(--accent-dim); border-color: var(--accent);">
+          <div class="flex-between">
+            <span style="font-size: 13px; color: var(--accent-text);">관리자에게 정산해야 할 금액</span>
+            <span class="text-mono" style="font-size: 16px; font-weight: 700;">${won(unsettled)}</span>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          ${sales.map(s => `
+            <div class="card">
+              <div class="flex-between">
+                <span style="font-weight: 600; font-size: 14px;">${s.products?.name || '-'} · ${s.quantity}개</span>
+                <span class="text-mono" style="font-size: 14px; font-weight: 700;">${won(s.sale_amount)}</span>
+              </div>
+              <div class="flex-between" style="margin-top: 8px; font-size: 12px;">
+                <span class="text-secondary">${s.sale_date}${s.memo ? ' · ' + s.memo : ''}</span>
+                ${s.status === 'cancelled'
+                  ? '<span class="badge badge-danger">취소됨</span>'
+                  : (!s.settlement_id ? '<span class="badge badge-warning">미정산</span>'
+                    : s.settlements?.status === 'completed' ? '<span class="badge badge-success">정산완료</span>'
+                    : '<span class="badge badge-warning">정산대기(입금확인중)</span>')}
+              </div>
+            </div>
+          `).join('') || '<p class="text-secondary" style="text-align:center; padding: 24px 0;">판매 내역이 없습니다.</p>'}
+        </div>
+      `;
+
+      document.querySelector('.app-shell').insertAdjacentHTML('beforeend', renderSellerNav('sales'));
+    }
+
+    init();
+  </script>
+</body>
+</html>

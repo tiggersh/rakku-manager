@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f0f13" />
+  <title>대시보드 - SH 라꾸 매니저</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="manifest" href="/manifest.json" />
+</head>
+<body>
+  <div class="app-shell">
+    <div class="page" id="page-content">
+      <p class="text-secondary">불러오는 중...</p>
+    </div>
+  </div>
+
+  <script type="module">
+    import { requireAuth, logout } from '/js/auth.js';
+    import { supabase } from '/js/supabaseClient.js';
+    import { won, renderAdminNav, renderHeader } from '/js/ui.js';
+
+    const page = document.getElementById('page-content');
+    const LOW_STOCK_THRESHOLD = 5;
+
+    async function init() {
+      const profile = await requireAuth('admin');
+      if (!profile) return;
+      await render(profile);
+    }
+
+    async function render(profile) {
+      const today = new Date().toISOString().slice(0, 10);
+      const monthStart = today.slice(0, 8) + '01';
+
+      const [productsRes, monthSalesRes, todaySalesRes, lowStockRes] = await Promise.all([
+        supabase.from('products').select('id', { count: 'exact', head: true }).eq('is_active', true),
+        supabase.from('sales').select('*, profiles!seller_id(name)').eq('status', 'active').gte('sale_date', monthStart),
+        supabase.from('sales').select('id', { count: 'exact', head: true }).eq('status', 'active').eq('sale_date', today),
+        supabase.from('admin_inventory').select('quantity, products(name)').lt('quantity', LOW_STOCK_THRESHOLD),
+      ]);
+
+      if (monthSalesRes.error) console.error('monthSales query error:', monthSalesRes.error);
+
+      const monthSales = monthSalesRes.data || [];
+      const totalSaleAmount = monthSales.reduce((sum, s) => sum + Number(s.sale_amount), 0);
+      const totalSettlement = monthSales.reduce((sum, s) => sum + Number(s.admin_settlement_amount), 0);
+      const totalCommission = monthSales.reduce((sum, s) => sum + Number(s.total_commission), 0);
+
+      const bySeller = {};
+      monthSales.forEach(s => {
+        const key = s.seller_id;
+        const name = s.profiles?.name || '알 수 없음';
+        if (!bySeller[key]) bySeller[key] = { name, amount: 0 };
+        bySeller[key].amount += Number(s.sale_amount);
+      });
+      const ranking = Object.entries(bySeller).sort((a, b) => b[1].amount - a[1].amount).slice(0, 5);
+
+      page.innerHTML = `
+        <div class="flex-between" style="margin-bottom: 20px;">
+          <div>
+            <h1 style="font-size: 22px;">안녕하세요, ${profile.name}님</h1>
+            <p class="text-secondary" style="margin-top: 4px; font-size: 13px;">SH 라꾸 매니저 관리자</p>
+          </div>
+          <button id="logout-btn" class="btn btn-ghost" style="width: auto; padding: 8px 14px; font-size: 12px;">로그아웃</button>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px;">
+          <div class="card">
+            <div class="text-secondary" style="font-size: 12px;">오늘 판매건수</div>
+            <div style="font-size: 22px; font-weight: 700; margin-top: 4px;">${todaySalesRes.count ?? 0}건</div>
+          </div>
+          <div class="card">
+            <div class="text-secondary" style="font-size: 12px;">활성 상품 수</div>
+            <div style="font-size: 22px; font-weight: 700; margin-top: 4px;">${productsRes.count ?? 0}개</div>
+          </div>
+          <div class="card">
+            <div class="text-secondary" style="font-size: 12px;">이번달 판매금액</div>
+            <div class="text-mono" style="font-size: 18px; font-weight: 700; margin-top: 4px; color: var(--accent-text);">${won(totalSaleAmount)}</div>
+          </div>
+          <div class="card">
+            <div class="text-secondary" style="font-size: 12px;">이번달 정산예정금</div>
+            <div class="text-mono" style="font-size: 18px; font-weight: 700; margin-top: 4px;">${won(totalSettlement)}</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom: 16px;">
+          <div class="flex-between">
+            <span class="text-secondary" style="font-size: 13px;">이번달 판매자 수수료 총액</span>
+            <span class="text-mono" style="font-size: 13px; font-weight: 600;">${won(totalCommission)}</span>
+          </div>
+        </div>
+
+        ${lowStockRes.data?.length ? `
+        <div class="card" style="margin-bottom: 16px;">
+          <h3 style="font-size: 15px; margin-bottom: 12px;">재고 부족 상품 <span class="text-secondary" style="font-weight: 400; font-size: 12px;">(${LOW_STOCK_THRESHOLD}개 미만)</span></h3>
+          ${lowStockRes.data.map(i => `
+            <div class="flex-between" style="padding: 6px 0;">
+              <span style="font-size: 13px;">${i.products?.name || '-'}</span>
+              <span class="badge badge-warning">${i.quantity}개</span>
+            </div>
+          `).join('')}
+        </div>` : ''}
+
+        <div class="card">
+          <h3 style="font-size: 15px; margin-bottom: 12px;">이번달 판매 순위</h3>
+          ${ranking.length ? ranking.map(([id, r], i) => `
+            <a href="/admin/seller-detail.html?id=${id}" class="flex-between" style="padding: 6px 0; display: flex;">
+              <span style="font-size: 13px; color: var(--text);">${i + 1}. ${r.name}</span>
+              <span class="text-mono" style="font-size: 13px; font-weight: 600; color: var(--accent-text);">${won(r.amount)} ›</span>
+            </a>
+          `).join('') : '<p class="text-secondary" style="font-size: 13px;">이번달 판매 내역이 없습니다.</p>'}
+        </div>
+      `;
+
+      let nav = document.querySelector('.bottom-nav');
+      if (nav) nav.remove();
+      document.querySelector('.app-shell').insertAdjacentHTML('beforeend', renderAdminNav('dashboard'));
+
+      document.getElementById('logout-btn').addEventListener('click', logout);
+    }
+
+    init();
+  </script>
+</body>
+</html>

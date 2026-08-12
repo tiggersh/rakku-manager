@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f0f13" />
+  <title>재고 관리 - SH 라꾸 매니저</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="manifest" href="/manifest.json" />
+</head>
+<body>
+  <div class="app-shell">
+    <div class="page" id="page-content">
+      <p class="text-secondary">불러오는 중...</p>
+    </div>
+  </div>
+
+  <script type="module">
+    import { requireAuth } from '/js/auth.js';
+    import { supabase } from '/js/supabaseClient.js';
+    import { won, renderAdminNav, renderHeader, showToast, invQty, todayStr } from '/js/ui.js';
+
+    const page = document.getElementById('page-content');
+    let products = [];
+    let sellers = [];
+    let transfers = [];
+    let stockLogs = [];
+    let sellerStock = [];
+
+    async function init() {
+      const profile = await requireAuth('admin');
+      if (!profile) return;
+      await loadData();
+      render();
+    }
+
+    async function loadData() {
+      const [p, s, t, sl, ss] = await Promise.all([
+        supabase.from('products').select('*, admin_inventory(quantity)').eq('is_active', true).order('name'),
+        supabase.from('profiles').select('*').eq('role', 'seller').eq('status', 'active').order('name'),
+        supabase.from('inventory_transfers')
+          .select('*, products(name), from:from_seller_id(name), to:to_seller_id(name)')
+          .order('transfer_date', { ascending: false })
+          .limit(10),
+        supabase.from('stock_in_logs')
+          .select('*, products(name)')
+          .order('stock_date', { ascending: false })
+          .limit(10),
+        supabase.from('seller_inventory')
+          .select('*, profiles(name), products(name)')
+          .gt('quantity', 0),
+      ]);
+      products = p.data || [];
+      sellers = s.data || [];
+      transfers = t.data || [];
+      stockLogs = sl.data || [];
+      sellerStock = ss.data || [];
+    }
+
+    function render() {
+      const totalWarehouseQty = products.reduce((sum, p) => sum + invQty(p), 0);
+      const totalSellerQty = sellerStock.reduce((sum, r) => sum + r.quantity, 0);
+
+      const bySeller = {};
+      sellerStock.forEach(r => {
+        const key = r.seller_id;
+        if (!bySeller[key]) bySeller[key] = { name: r.profiles?.name || '-', items: [], total: 0 };
+        bySeller[key].items.push(`${r.products?.name || '-'} ${r.quantity}개`);
+        bySeller[key].total += r.quantity;
+      });
+      const sellerGroups = Object.entries(bySeller);
+
+      page.innerHTML = `
+        ${renderHeader('재고 관리', '창고 재고, 입고, 지급을 한눈에')}
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px;">
+          <div class="card">
+            <div class="text-secondary" style="font-size: 12px;">관리자 창고 총재고</div>
+            <div style="font-size: 20px; font-weight: 700; margin-top: 4px;">${totalWarehouseQty}개</div>
+          </div>
+          <div class="card">
+            <div class="text-secondary" style="font-size: 12px;">판매자 보유 총재고</div>
+            <div style="font-size: 20px; font-weight: 700; margin-top: 4px;">${totalSellerQty}개</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom: 16px;">
+          <h3 style="font-size: 15px; margin-bottom: 14px;">관리자 창고 재고</h3>
+          ${products.map(p => `
+            <div class="flex-between" style="padding: 8px 0; border-bottom: 1px solid var(--border);">
+              <span style="font-size: 13px;">${p.name}</span>
+              <span class="text-mono" style="font-size: 13px; font-weight: 600;">${invQty(p)}개</span>
+            </div>
+          `).join('') || '<p class="text-secondary" style="font-size: 13px;">활성 상품이 없습니다.</p>'}
+        </div>
+
+        <div class="card" style="margin-bottom: 16px;">
+          <h3 style="font-size: 15px; margin-bottom: 14px;">판매자별 보유 재고</h3>
+          ${sellerGroups.length ? sellerGroups.map(([id, g]) => `
+            <a href="/admin/seller-detail.html?id=${id}" style="display:block; padding: 10px 0; border-bottom: 1px solid var(--border);">
+              <div class="flex-between">
+                <span style="font-size: 13px; font-weight: 600; color: var(--text);">${g.name}</span>
+                <span class="text-mono" style="font-size: 13px; font-weight: 600; color: var(--accent-text);">총 ${g.total}개 ›</span>
+              </div>
+              <div class="text-secondary" style="font-size: 12px; margin-top: 4px;">${g.items.join(' · ')}</div>
+            </a>
+          `).join('') : '<p class="text-secondary" style="font-size: 13px;">판매자에게 지급된 재고가 없습니다.</p>'}
+        </div>
+
+        <div class="card" style="margin-bottom: 16px;">
+          <h3 style="font-size: 15px; margin-bottom: 14px;">창고 재입고</h3>
+          <form id="restock-form">
+            <div class="field">
+              <label>상품</label>
+              <select id="r-product" required>
+                <option value="">선택</option>
+                ${products.map(p => `<option value="${p.id}">${p.name} (현재 ${invQty(p)}개)</option>`).join('')}
+              </select>
+            </div>
+            <div class="field">
+              <label>입고 수량</label>
+              <input type="number" id="r-qty" min="1" required placeholder="예: 50" />
+            </div>
+            <div class="field">
+              <label>입고일자</label>
+              <input type="date" id="r-date" required value="${todayStr()}" />
+            </div>
+            <p class="error-text" id="restock-error"></p>
+            <button type="submit" class="btn btn-ghost">입고 등록</button>
+          </form>
+        </div>
+
+        <div class="card" style="margin-bottom: 16px;">
+          <h3 style="font-size: 15px; margin-bottom: 14px;">판매자에게 재고 지급</h3>
+          <form id="transfer-form">
+            <div class="field">
+              <label>상품</label>
+              <select id="f-product" required>
+                <option value="">선택</option>
+                ${products.map(p => `<option value="${p.id}">${p.name} (창고 ${invQty(p)}개)</option>`).join('')}
+              </select>
+            </div>
+            <div class="field">
+              <label>판매자</label>
+              <select id="f-seller" required>
+                <option value="">선택</option>
+                ${sellers.map(s => `<option value="${s.id}">${s.name}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field">
+              <label>지급 수량</label>
+              <input type="number" id="f-qty" min="1" required placeholder="예: 10" />
+            </div>
+            <div class="field">
+              <label>지급일자</label>
+              <input type="date" id="f-date" required value="${todayStr()}" />
+            </div>
+            <p class="error-text" id="form-error"></p>
+            <button type="submit" class="btn btn-primary">지급하기</button>
+          </form>
+        </div>
+
+        <div class="card" style="margin-bottom: 16px;">
+          <h3 style="font-size: 15px; margin-bottom: 14px;">최근 입고내역</h3>
+          ${stockLogs.map(l => `
+            <div style="padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px;">
+              <div class="flex-between">
+                <span>${l.products?.name || '-'}</span>
+                <span class="text-mono" style="font-weight: 600; color: var(--success);">+${l.quantity}개</span>
+              </div>
+              <div class="text-secondary" style="margin-top: 2px;">${l.stock_date}</div>
+            </div>
+          `).join('') || '<p class="text-secondary" style="font-size: 13px;">입고 이력이 없습니다.</p>'}
+        </div>
+
+        <div class="card">
+          <h3 style="font-size: 15px; margin-bottom: 14px;">최근 이동 이력</h3>
+          ${transfers.map(t => `
+            <div style="padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px;">
+              <div class="flex-between">
+                <span>${t.products?.name || '-'}</span>
+                <span class="text-mono" style="font-weight: 600;">${t.quantity}개</span>
+              </div>
+              <div class="text-secondary" style="margin-top: 2px;">
+                ${t.from?.name || '관리자 창고'} → ${t.to?.name || '관리자 창고'} · ${t.transfer_date}
+              </div>
+            </div>
+          `).join('') || '<p class="text-secondary" style="font-size: 13px;">이동 이력이 없습니다.</p>'}
+        </div>
+      `;
+
+      let nav = document.querySelector('.bottom-nav');
+      if (nav) nav.remove();
+      document.querySelector('.app-shell').insertAdjacentHTML('beforeend', renderAdminNav('inventory'));
+
+      document.getElementById('transfer-form').addEventListener('submit', onTransfer);
+      document.getElementById('restock-form').addEventListener('submit', onRestock);
+    }
+
+    async function onRestock(e) {
+      e.preventDefault();
+      const errEl = document.getElementById('restock-error');
+      errEl.textContent = '';
+
+      const { error } = await supabase.rpc('register_stock_in', {
+        p_product_id: document.getElementById('r-product').value,
+        p_quantity: Number(document.getElementById('r-qty').value),
+        p_stock_date: document.getElementById('r-date').value,
+      });
+
+      if (error) {
+        errEl.textContent = '입고 실패: ' + error.message;
+        return;
+      }
+
+      showToast('입고 등록되었습니다', 'success');
+      await loadData();
+      render();
+    }
+
+    async function onTransfer(e) {
+      e.preventDefault();
+      const errEl = document.getElementById('form-error');
+      errEl.textContent = '';
+
+      const { error } = await supabase.rpc('transfer_inventory', {
+        p_product_id: document.getElementById('f-product').value,
+        p_from_seller_id: null,
+        p_to_seller_id: document.getElementById('f-seller').value,
+        p_quantity: Number(document.getElementById('f-qty').value),
+        p_transfer_date: document.getElementById('f-date').value,
+      });
+
+      if (error) {
+        errEl.textContent = error.message.includes('부족') ? error.message : '지급 실패: ' + error.message;
+        return;
+      }
+
+      showToast('재고를 지급했습니다', 'success');
+      await loadData();
+      render();
+    }
+
+    init();
+  </script>
+</body>
+</html>

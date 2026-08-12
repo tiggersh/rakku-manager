@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f0f13" />
+  <title>판매자 상세 - SH 라꾸 매니저</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="manifest" href="/manifest.json" />
+</head>
+<body>
+  <div class="app-shell">
+    <div class="page" id="page-content">
+      <p class="text-secondary">불러오는 중...</p>
+    </div>
+  </div>
+
+  <script type="module">
+    import { requireAuth } from '/js/auth.js';
+    import { supabase } from '/js/supabaseClient.js';
+    import { won, renderAdminNav, showToast } from '/js/ui.js';
+
+    const page = document.getElementById('page-content');
+    const sellerId = new URLSearchParams(location.search).get('id');
+
+    async function init() {
+      const profile = await requireAuth('admin');
+      if (!profile) return;
+      if (!sellerId) { page.innerHTML = '<p class="error-text">판매자 정보가 없습니다.</p>'; return; }
+      await render();
+    }
+
+    async function render() {
+      const [sellerRes, invRes, transferRes, salesRes, openSettlementsRes] = await Promise.all([
+        supabase.from('profiles').select('*').eq('id', sellerId).single(),
+        supabase.from('seller_inventory').select('*, products(name)').eq('seller_id', sellerId).gt('quantity', 0),
+        supabase.from('inventory_transfers')
+          .select('*, products(name), from:from_seller_id(name), to:to_seller_id(name)')
+          .or(`from_seller_id.eq.${sellerId},to_seller_id.eq.${sellerId}`)
+          .order('transfer_date', { ascending: false })
+          .limit(15),
+        supabase.from('sales')
+          .select('*, products(name), settlements(status)')
+          .eq('seller_id', sellerId)
+          .order('sale_date', { ascending: false })
+          .limit(20),
+        supabase.from('settlements').select('total_due, paid_amount').eq('seller_id', sellerId).in('status', ['pending', 'partial']),
+      ]);
+
+      const seller = sellerRes.data;
+      const inventory = invRes.data || [];
+      const transfers = transferRes.data || [];
+      const sales = salesRes.data || [];
+
+      const activeSales = sales.filter(s => s.status === 'active');
+      const totalSaleAmount = activeSales.reduce((sum, s) => sum + Number(s.sale_amount), 0);
+      const unassigned = activeSales.filter(s => !s.settlement_id).reduce((sum, s) => sum + Number(s.admin_settlement_amount), 0);
+      const openOwed = (openSettlementsRes.data || []).reduce((sum, r) => sum + (Number(r.total_due) - Number(r.paid_amount)), 0);
+      const unsettled = unassigned + openOwed;
+
+      page.innerHTML = `
+        <div style="margin-bottom: 20px;">
+          <a href="/admin/sellers.html" class="text-secondary" style="font-size: 13px;">← 판매자 목록</a>
+          <div class="flex-between" style="margin-top: 8px;">
+            <div>
+              <h1 style="font-size: 22px;">${seller?.name || '-'}</h1>
+              <p class="text-secondary" style="margin-top: 4px; font-size: 13px;">${seller?.phone || '연락처 없음'}</p>
+            </div>
+            <span class="badge ${seller?.status === 'active' ? 'badge-success' : 'badge-danger'}">${seller?.status === 'active' ? '활성' : '비활성'}</span>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px;">
+          <div class="card">
+            <div class="text-secondary" style="font-size: 12px;">총 판매금액 (전체)</div>
+            <div class="text-mono" style="font-size: 17px; font-weight: 700; margin-top: 4px;">${won(totalSaleAmount)}</div>
+          </div>
+          <div class="card">
+            <div class="text-secondary" style="font-size: 12px;">미정산 정산금</div>
+            <div class="text-mono" style="font-size: 17px; font-weight: 700; margin-top: 4px; color: var(--accent-text);">${won(unsettled)}</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom: 16px;">
+          <h3 style="font-size: 15px; margin-bottom: 12px;">보유 재고</h3>
+          ${inventory.length ? inventory.map(i => `
+            <div class="flex-between" style="padding: 7px 0; border-bottom: 1px solid var(--border);">
+              <span style="font-size: 13px;">${i.products?.name || '-'}</span>
+              <span class="text-mono" style="font-size: 13px; font-weight: 600;">${i.quantity}개</span>
+            </div>
+          `).join('') : '<p class="text-secondary" style="font-size: 13px;">보유 재고가 없습니다.</p>'}
+        </div>
+
+        <div class="card" style="margin-bottom: 16px;">
+          <h3 style="font-size: 15px; margin-bottom: 12px;">이동 이력</h3>
+          ${transfers.length ? transfers.map(t => `
+            <div style="padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 12px;">
+              <div class="flex-between">
+                <span>${t.products?.name || '-'}</span>
+                <span class="text-mono" style="font-weight: 600;">${t.quantity}개</span>
+              </div>
+              <div class="text-secondary" style="margin-top: 2px;">
+                ${t.from?.name || '관리자 창고'} → ${t.to?.name || '관리자 창고'} · ${t.transfer_date}
+              </div>
+            </div>
+          `).join('') : '<p class="text-secondary" style="font-size: 13px;">이동 이력이 없습니다.</p>'}
+        </div>
+
+        <div class="card">
+          <h3 style="font-size: 15px; margin-bottom: 12px;">판매현황 <span class="text-secondary" style="font-weight: 400; font-size: 12px;">(최근 20건)</span></h3>
+          ${sales.length ? sales.map(s => `
+            <div style="padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px;">
+              <div class="flex-between">
+                <span>${s.products?.name || '-'} · ${s.quantity}개</span>
+                <span class="text-mono" style="font-weight: 600;">${won(s.sale_amount)}</span>
+              </div>
+              <div class="text-secondary flex-between" style="margin-top: 2px;">
+                <span>${s.sale_date}</span>
+                <span>${s.status === 'cancelled' ? '<span class="badge badge-danger">취소됨</span>' : (!s.settlement_id ? '미정산' : s.settlements?.status === 'completed' ? '정산완료' : '정산대기')}</span>
+              </div>
+            </div>
+          `).join('') : '<p class="text-secondary" style="font-size: 13px;">판매 내역이 없습니다.</p>'}
+        </div>
+      `;
+
+      let nav = document.querySelector('.bottom-nav');
+      if (nav) nav.remove();
+      document.querySelector('.app-shell').insertAdjacentHTML('beforeend', renderAdminNav('sellers'));
+    }
+
+    init();
+  </script>
+</body>
+</html>

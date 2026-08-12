@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f0f13" />
+  <title>정산 관리 - SH 라꾸 매니저</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="manifest" href="/manifest.json" />
+</head>
+<body>
+  <div class="app-shell">
+    <div class="page" id="page-content">
+      <p class="text-secondary">불러오는 중...</p>
+    </div>
+  </div>
+
+  <script type="module">
+    import { requireAuth } from '/js/auth.js';
+    import { supabase } from '/js/supabaseClient.js';
+    import { won, renderAdminNav, renderHeader, showToast, bindThousandsInput, rawNumber, todayStr } from '/js/ui.js';
+
+    const page = document.getElementById('page-content');
+    let unassignedBySeller = [];
+    let openSettlements = [];
+    let doneSettlements = [];
+    let distributionLogs = [];
+
+    async function init() {
+      const profile = await requireAuth('admin');
+      if (!profile) return;
+      await loadData();
+      render();
+    }
+
+    async function loadData() {
+      const [unassignedRes, settlementsRes] = await Promise.all([
+        supabase.from('sales')
+          .select('seller_id, admin_settlement_amount, profiles!seller_id(name)')
+          .eq('status', 'active')
+          .is('settlement_id', null),
+        supabase.from('settlements')
+          .select('*, profiles(name)')
+          .order('created_at', { ascending: false })
+          .limit(30),
+      ]);
+
+      if (unassignedRes.error) console.error('unassigned sales query error:', unassignedRes.error);
+      if (settlementsRes.error) console.error('settlements query error:', settlementsRes.error);
+
+      const grouped = {};
+      (unassignedRes.data || []).forEach(s => {
+        const key = s.seller_id;
+        if (!grouped[key]) grouped[key] = { sellerId: key, name: s.profiles?.name || '-', amount: 0 };
+        grouped[key].amount += Number(s.admin_settlement_amount);
+      });
+      unassignedBySeller = Object.values(grouped).sort((a, b) => b.amount - a.amount);
+
+      const all = settlementsRes.data || [];
+      openSettlements = all.filter(s => s.status === 'pending' || s.status === 'partial');
+      doneSettlements = all.filter(s => s.status === 'completed');
+
+      const doneIds = doneSettlements.map(s => s.id);
+      if (doneIds.length) {
+        const { data: logs } = await supabase
+          .from('profit_distribution_logs')
+          .select('*, partners(name)')
+          .in('settlement_id', doneIds);
+        distributionLogs = logs || [];
+      } else {
+        distributionLogs = [];
+      }
+    }
+
+    function render() {
+      page.innerHTML = `
+        ${renderHeader('정산 관리', '판매자 → 관리자 정산 처리')}
+        <a href="/admin/partners.html" class="text-secondary" style="font-size: 12px; display: inline-block; margin-bottom: 16px;">파트너 / 분배 설정 관리 →</a>
+
+        <div class="card" style="margin-bottom: 16px;">
+          <h3 style="font-size: 15px; margin-bottom: 12px;">미정산 판매자 <span class="text-secondary" style="font-weight: 400; font-size: 12px;">(아직 정산 생성 전)</span></h3>
+          ${unassignedBySeller.length ? unassignedBySeller.map(g => `
+            <div class="flex-between" style="padding: 10px 0; border-bottom: 1px solid var(--border);">
+              <div>
+                <div style="font-size: 13px; font-weight: 600;">${g.name}</div>
+                <div class="text-mono text-secondary" style="font-size: 12px; margin-top: 2px;">${won(g.amount)}</div>
+              </div>
+              <button class="btn btn-primary btn-create-settlement" data-seller="${g.sellerId}" style="width: auto; padding: 8px 14px; font-size: 12px;">정산 생성</button>
+            </div>
+          `).join('') : '<p class="text-secondary" style="font-size: 13px;">미정산 판매건이 없습니다.</p>'}
+        </div>
+
+        <div class="card" style="margin-bottom: 16px;">
+          <h3 style="font-size: 15px; margin-bottom: 12px;">진행중인 정산 <span class="text-secondary" style="font-weight: 400; font-size: 12px;">(입금 확인 대기)</span></h3>
+          ${openSettlements.length ? openSettlements.map(s => `
+            <div style="padding: 12px 0; border-bottom: 1px solid var(--border);">
+              <div class="flex-between">
+                <span style="font-size: 13px; font-weight: 600;">${s.profiles?.name || '-'}</span>
+                <span class="badge ${s.status === 'partial' ? 'badge-warning' : 'badge-danger'}">${s.status === 'partial' ? '부분입금' : '입금대기'}</span>
+              </div>
+              <div class="text-secondary" style="font-size: 12px; margin-top: 6px;">
+                정산예정 ${won(s.total_due)} · 입금됨 ${won(s.paid_amount)} · 잔액 ${won(s.total_due - s.paid_amount)}
+              </div>
+              <form class="pay-form" data-settlement="${s.id}" style="display: flex; gap: 6px; margin-top: 10px; align-items: flex-end;">
+                <div class="field" style="flex: 1; margin-bottom: 0;">
+                  <label style="font-size: 11px;">입금액</label>
+                  <input type="text" inputmode="numeric" class="pay-amount" placeholder="${Number(s.total_due - s.paid_amount).toLocaleString('ko-KR')}" />
+                </div>
+                <div class="field" style="flex: 1; margin-bottom: 0;">
+                  <label style="font-size: 11px;">입금일</label>
+                  <input type="date" class="pay-date" value="${todayStr()}" />
+                </div>
+                <button type="submit" class="btn btn-primary" style="width: auto; padding: 10px 14px; font-size: 12px;">확인</button>
+              </form>
+            </div>
+          `).join('') : '<p class="text-secondary" style="font-size: 13px;">진행중인 정산이 없습니다.</p>'}
+        </div>
+
+        <div class="card">
+          <h3 style="font-size: 15px; margin-bottom: 12px;">완료된 정산 <span class="text-secondary" style="font-weight: 400; font-size: 12px;">(최근 순)</span></h3>
+          ${doneSettlements.length ? doneSettlements.map(s => {
+            const logs = distributionLogs.filter(l => l.settlement_id === s.id);
+            return `
+            <div style="padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 12px;">
+              <div class="flex-between">
+                <span>${s.profiles?.name || '-'}</span>
+                <span class="text-mono" style="font-weight: 600;">${won(s.total_due)} · ${s.paid_at || ''}</span>
+              </div>
+              ${logs.length ? `
+                <div class="text-secondary" style="margin-top: 6px;">
+                  ${logs.map(l => `${l.partners?.name || '-'} ${won(l.amount)}`).join(' · ')}
+                </div>
+              ` : `
+                <button class="btn btn-ghost btn-distribute" data-settlement="${s.id}" style="margin-top: 8px; padding: 6px 12px; font-size: 12px; width: auto;">분배 처리</button>
+              `}
+            </div>
+          `;
+          }).join('') : '<p class="text-secondary" style="font-size: 13px;">완료된 정산이 없습니다.</p>'}
+        </div>
+      `;
+
+      let nav = document.querySelector('.bottom-nav');
+      if (nav) nav.remove();
+      document.querySelector('.app-shell').insertAdjacentHTML('beforeend', renderAdminNav('settlements'));
+
+      document.querySelectorAll('.pay-amount').forEach(bindThousandsInput);
+
+      document.querySelectorAll('.btn-create-settlement').forEach(btn => {
+        btn.addEventListener('click', () => onCreateSettlement(btn.dataset.seller, btn));
+      });
+
+      document.querySelectorAll('.pay-form').forEach(form => {
+        form.addEventListener('submit', (e) => onConfirmPayment(e, form));
+      });
+
+      document.querySelectorAll('.btn-distribute').forEach(btn => {
+        btn.addEventListener('click', () => onDistribute(btn.dataset.settlement, btn));
+      });
+    }
+
+    async function onDistribute(settlementId, btn) {
+      btn.disabled = true;
+      btn.textContent = '처리중...';
+
+      const { error } = await supabase.rpc('distribute_settlement', { p_settlement_id: settlementId });
+
+      if (error) {
+        showToast('분배 실패: ' + error.message, 'danger');
+        btn.disabled = false;
+        btn.textContent = '분배 처리';
+        return;
+      }
+
+      showToast('분배가 완료되었습니다', 'success');
+      await loadData();
+      render();
+    }
+
+    async function onCreateSettlement(sellerId, btn) {
+      btn.disabled = true;
+      btn.textContent = '처리중...';
+
+      const { error } = await supabase.rpc('create_settlement', { p_seller_id: sellerId });
+
+      if (error) {
+        showToast('정산 생성 실패: ' + error.message, 'danger');
+        btn.disabled = false;
+        btn.textContent = '정산 생성';
+        return;
+      }
+
+      showToast('정산이 생성되었습니다', 'success');
+      await loadData();
+      render();
+    }
+
+    async function onConfirmPayment(e, form) {
+      e.preventDefault();
+      const settlementId = form.dataset.settlement;
+      const amountEl = form.querySelector('.pay-amount');
+      const dateEl = form.querySelector('.pay-date');
+      const amount = Number(rawNumber(amountEl));
+
+      if (!amount || amount <= 0) {
+        showToast('입금액을 입력해주세요', 'danger');
+        return;
+      }
+
+      const { error } = await supabase.rpc('confirm_settlement_payment', {
+        p_settlement_id: settlementId,
+        p_paid_amount: amount,
+        p_paid_date: dateEl.value,
+      });
+
+      if (error) {
+        showToast('처리 실패: ' + error.message, 'danger');
+        return;
+      }
+
+      showToast('입금이 확인되었습니다', 'success');
+      await loadData();
+      render();
+    }
+
+    init();
+  </script>
+</body>
+</html>

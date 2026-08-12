@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f0f13" />
+  <title>판매자 관리 - SH 라꾸 매니저</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="manifest" href="/manifest.json" />
+</head>
+<body>
+  <div class="app-shell">
+    <div class="page" id="page-content">
+      <p class="text-secondary">불러오는 중...</p>
+    </div>
+  </div>
+
+  <script type="module">
+    import { requireAuth } from '/js/auth.js';
+    import { supabase } from '/js/supabaseClient.js';
+    import { renderAdminNav, renderHeader, showToast } from '/js/ui.js';
+
+    const page = document.getElementById('page-content');
+
+    async function init() {
+      const profile = await requireAuth('admin');
+      if (!profile) return;
+      await render();
+    }
+
+    async function render() {
+      const { data: sellers, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('role', 'seller')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        page.innerHTML = `<p class="error-text">불러오기 실패: ${error.message}</p>`;
+        return;
+      }
+
+      page.innerHTML = `
+        ${renderHeader('판매자 관리', `총 ${sellers.length}명`)}
+
+        <div class="card" style="margin-bottom: 16px; background: var(--accent-dim); border-color: var(--accent);">
+          <p style="font-size: 12px; line-height: 1.6; color: var(--accent-text);">
+            판매자 등록은 2단계입니다.<br/>
+            ① Supabase 대시보드 → Authentication → Users → Add user로 로그인 계정(이메일/비번) 생성 후 User UID 복사<br/>
+            ② 아래 폼에 UID와 정보 입력해서 등록
+          </p>
+        </div>
+
+        <div class="card" style="margin-bottom: 16px;">
+          <h3 style="font-size: 15px; margin-bottom: 14px;">새 판매자 등록</h3>
+          <form id="seller-form">
+            <div class="field">
+              <label>User UID (Supabase Auth에서 복사)</label>
+              <input type="text" id="f-uid" required placeholder="예: a1b2c3d4-..." />
+            </div>
+            <div class="field">
+              <label>이름</label>
+              <input type="text" id="f-name" required placeholder="예: 홍길동" />
+            </div>
+            <div class="field">
+              <label>연락처</label>
+              <input type="text" id="f-phone" placeholder="예: 010-1234-5678" />
+            </div>
+            <p class="error-text" id="form-error"></p>
+            <button type="submit" class="btn btn-primary">등록</button>
+          </form>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          ${sellers.map(s => `
+            <div class="card">
+              <div class="flex-between">
+                <div>
+                  <div style="font-weight: 600; font-size: 14px;">${s.name}</div>
+                  <div class="text-secondary" style="font-size: 12px; margin-top: 2px;">${s.phone || '연락처 없음'}</div>
+                </div>
+                <span class="badge ${s.status === 'active' ? 'badge-success' : 'badge-danger'}">${s.status === 'active' ? '활성' : '비활성'}</span>
+              </div>
+              <div style="display: flex; gap: 8px; margin-top: 12px;">
+                <a href="/admin/seller-detail.html?id=${s.id}" class="btn btn-ghost" style="font-size: 13px; padding: 8px; flex: 1; text-align: center;">상세보기</a>
+                <button class="btn btn-ghost btn-toggle" data-id="${s.id}" data-status="${s.status}" style="font-size: 13px; padding: 8px; flex: 1;">
+                  ${s.status === 'active' ? '비활성화' : '활성화'}
+                </button>
+              </div>
+            </div>
+          `).join('') || '<p class="text-secondary" style="text-align:center; padding: 24px 0;">등록된 판매자가 없습니다.</p>'}
+        </div>
+      `;
+
+      let nav = document.querySelector('.bottom-nav');
+      if (nav) nav.remove();
+      document.querySelector('.app-shell').insertAdjacentHTML('beforeend', renderAdminNav('sellers'));
+
+      document.getElementById('seller-form').addEventListener('submit', onSubmit);
+      document.querySelectorAll('.btn-toggle').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const isActive = btn.dataset.status === 'active';
+          const { error } = await supabase
+            .from('profiles')
+            .update({ status: isActive ? 'inactive' : 'active' })
+            .eq('id', btn.dataset.id);
+          if (error) { showToast('변경 실패: ' + error.message, 'danger'); return; }
+          showToast('변경되었습니다', 'success');
+          render();
+        });
+      });
+    }
+
+    async function onSubmit(e) {
+      e.preventDefault();
+      const errEl = document.getElementById('form-error');
+      errEl.textContent = '';
+
+      const payload = {
+        id: document.getElementById('f-uid').value.trim(),
+        role: 'seller',
+        name: document.getElementById('f-name').value.trim(),
+        phone: document.getElementById('f-phone').value.trim() || null,
+        status: 'active',
+      };
+
+      const { error } = await supabase.from('profiles').insert(payload);
+
+      if (error) {
+        errEl.textContent = error.message.includes('duplicate')
+          ? '이미 등록된 UID입니다.'
+          : '등록 실패: ' + error.message;
+        return;
+      }
+
+      showToast('판매자가 등록되었습니다', 'success');
+      render();
+    }
+
+    init();
+  </script>
+</body>
+</html>

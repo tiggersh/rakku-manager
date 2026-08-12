@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f0f13" />
+  <title>파트너/분배 설정 - SH 라꾸 매니저</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="manifest" href="/manifest.json" />
+</head>
+<body>
+  <div class="app-shell">
+    <div class="page" id="page-content">
+      <p class="text-secondary">불러오는 중...</p>
+    </div>
+  </div>
+
+  <script type="module">
+    import { requireAuth } from '/js/auth.js';
+    import { supabase } from '/js/supabaseClient.js';
+    import { renderAdminNav, renderHeader, showToast } from '/js/ui.js';
+
+    const page = document.getElementById('page-content');
+    let partners = [];
+    let currentRule = null;
+
+    async function init() {
+      const profile = await requireAuth('admin');
+      if (!profile) return;
+      await loadData();
+      render();
+    }
+
+    async function loadData() {
+      const [pRes, rRes] = await Promise.all([
+        supabase.from('partners').select('*').order('name'),
+        supabase.from('profit_share_rules').select('*').is('product_id', null).order('created_at', { ascending: false }).limit(1),
+      ]);
+      partners = pRes.data || [];
+      currentRule = rRes.data?.[0] || null;
+    }
+
+    function ruleValueFor(partnerId) {
+      if (!currentRule) return '';
+      const item = (currentRule.config || []).find(c => c.partner_id === partnerId);
+      return item ? item.value : '';
+    }
+
+    function render() {
+      page.innerHTML = `
+        <a href="/admin/settlements.html" class="text-secondary" style="font-size: 13px;">← 정산 관리</a>
+        ${renderHeader('파트너 / 분배 설정', '관리자 정산금을 나눠 가질 대상과 비율')}
+
+        <div class="card" style="margin-bottom: 16px;">
+          <h3 style="font-size: 15px; margin-bottom: 14px;">파트너 추가</h3>
+          <form id="partner-form" style="display: flex; gap: 8px; align-items: flex-end;">
+            <div class="field" style="flex: 1; margin-bottom: 0;">
+              <label>이름</label>
+              <input type="text" id="p-name" required placeholder="예: 나, 친구" />
+            </div>
+            <button type="submit" class="btn btn-primary" style="width: auto; padding: 12px 18px;">추가</button>
+          </form>
+        </div>
+
+        ${partners.length ? `
+        <div class="card" style="margin-bottom: 16px;">
+          <h3 style="font-size: 15px; margin-bottom: 4px;">분배 규칙</h3>
+          <p class="text-secondary" style="font-size: 12px; margin-bottom: 14px;">전체 상품 공통 규칙입니다. 저장하면 새 규칙으로 갱신되고, 이후 분배부터 적용됩니다.</p>
+
+          <form id="rule-form">
+            <div class="field">
+              <label>방식</label>
+              <select id="r-method">
+                <option value="percentage" ${currentRule?.method === 'percentage' ? 'selected' : ''}>퍼센트 (%)</option>
+                <option value="ratio" ${currentRule?.method === 'ratio' ? 'selected' : ''}>비율 (3:1 같은 형태)</option>
+              </select>
+            </div>
+
+            ${partners.map(p => `
+              <div class="field">
+                <label>${p.name}</label>
+                <input type="number" step="0.01" min="0" class="partner-value" data-partner="${p.id}" value="${ruleValueFor(p.id)}" placeholder="예: 75 또는 3" />
+              </div>
+            `).join('')}
+
+            <p class="error-text" id="rule-error"></p>
+            <button type="submit" class="btn btn-primary">규칙 저장</button>
+          </form>
+
+          ${currentRule ? `
+          <div class="card" style="margin-top: 14px; background: var(--accent-dim); border-color: var(--accent);">
+            <div style="font-size: 12px; color: var(--accent-text); margin-bottom: 6px;">현재 적용중인 규칙</div>
+            ${(currentRule.config || []).map(c => {
+              const partner = partners.find(p => p.id === c.partner_id);
+              return `<div class="flex-between" style="font-size: 12px; padding: 2px 0;"><span>${partner?.name || '-'}</span><span>${c.value}${currentRule.method === 'percentage' ? '%' : ''}</span></div>`;
+            }).join('')}
+          </div>` : ''}
+        </div>
+        ` : '<p class="text-secondary" style="text-align:center; padding: 24px 0;">먼저 파트너를 추가해주세요.</p>'}
+      `;
+
+      let nav = document.querySelector('.bottom-nav');
+      if (nav) nav.remove();
+      document.querySelector('.app-shell').insertAdjacentHTML('beforeend', renderAdminNav('settlements'));
+
+      document.getElementById('partner-form').addEventListener('submit', onAddPartner);
+      const ruleForm = document.getElementById('rule-form');
+      if (ruleForm) ruleForm.addEventListener('submit', onSaveRule);
+    }
+
+    async function onAddPartner(e) {
+      e.preventDefault();
+      const name = document.getElementById('p-name').value.trim();
+      if (!name) return;
+
+      const { error } = await supabase.from('partners').insert({ name });
+      if (error) { showToast('추가 실패: ' + error.message, 'danger'); return; }
+
+      showToast('파트너가 추가되었습니다', 'success');
+      await loadData();
+      render();
+    }
+
+    async function onSaveRule(e) {
+      e.preventDefault();
+      const errEl = document.getElementById('rule-error');
+      errEl.textContent = '';
+
+      const method = document.getElementById('r-method').value;
+      const config = [];
+      document.querySelectorAll('.partner-value').forEach(input => {
+        const value = Number(input.value);
+        if (value > 0) config.push({ partner_id: input.dataset.partner, value });
+      });
+
+      if (!config.length) {
+        errEl.textContent = '최소 한 명 이상 값을 입력해주세요.';
+        return;
+      }
+
+      if (method === 'percentage') {
+        const sum = config.reduce((s, c) => s + c.value, 0);
+        if (Math.round(sum) !== 100) {
+          errEl.textContent = `퍼센트 합계는 100이어야 합니다 (현재 ${sum}).`;
+          return;
+        }
+      }
+
+      const { error } = await supabase.from('profit_share_rules').insert({ product_id: null, method, config });
+      if (error) { errEl.textContent = '저장 실패: ' + error.message; return; }
+
+      showToast('분배 규칙이 저장되었습니다', 'success');
+      await loadData();
+      render();
+    }
+
+    init();
+  </script>
+</body>
+</html>

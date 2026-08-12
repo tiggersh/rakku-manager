@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f0f13" />
+  <title>상품 관리 - SH 라꾸 매니저</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="manifest" href="/manifest.json" />
+</head>
+<body>
+  <div class="app-shell">
+    <div class="page" id="page-content">
+      <p class="text-secondary">불러오는 중...</p>
+    </div>
+  </div>
+
+  <script type="module">
+    import { requireAuth } from '/js/auth.js';
+    import { supabase } from '/js/supabaseClient.js';
+    import { won, renderAdminNav, renderHeader, showToast, bindThousandsInput, rawNumber, formatNumber } from '/js/ui.js';
+
+    const page = document.getElementById('page-content');
+    let editingId = null;
+
+    async function init() {
+      const profile = await requireAuth('admin');
+      if (!profile) return;
+      await render();
+    }
+
+    async function render() {
+      const { data: products, error } = await supabase
+        .from('products')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        page.innerHTML = `<p class="error-text">불러오기 실패: ${error.message}</p>`;
+        return;
+      }
+
+      page.innerHTML = `
+        ${renderHeader('상품 관리', `총 ${products.length}개 상품`)}
+
+        <div class="card" style="margin-bottom: 16px;">
+          <h3 style="font-size: 15px; margin-bottom: 14px;">${editingId ? '상품 수정' : '새 상품 등록'}</h3>
+          <form id="product-form">
+            <div class="field">
+              <label>상품명</label>
+              <input type="text" id="f-name" required placeholder="예: A상품" />
+            </div>
+            <div class="field">
+              <label>상품코드</label>
+              <input type="text" id="f-code" required placeholder="예: PRD-001" />
+            </div>
+            <div class="field">
+              <label>기본 판매가격 (선택)</label>
+              <input type="text" inputmode="numeric" id="f-price" placeholder="예: 100,000" />
+            </div>
+            <div class="field">
+              <label>건당 판매수수료</label>
+              <input type="text" inputmode="numeric" id="f-commission" required value="20,000" />
+            </div>
+            ${!editingId ? `
+            <div class="field">
+              <label>초기 재고 수량 (선택, 관리자 창고 기준)</label>
+              <input type="number" id="f-stock" min="0" placeholder="예: 100" />
+            </div>` : ''}
+            <p class="error-text" id="form-error"></p>
+            <div style="display: flex; gap: 8px;">
+              <button type="submit" class="btn btn-primary">${editingId ? '수정 저장' : '등록'}</button>
+              ${editingId ? `<button type="button" id="cancel-edit" class="btn btn-ghost" style="width: auto; padding: 14px 20px;">취소</button>` : ''}
+            </div>
+          </form>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          ${products.map(p => `
+            <div class="card">
+              <div class="flex-between">
+                <div>
+                  <div style="font-weight: 600; font-size: 14px;">${p.name}</div>
+                  <div class="text-secondary text-mono" style="font-size: 12px; margin-top: 2px;">${p.code}</div>
+                </div>
+                <span class="badge ${p.is_active ? 'badge-success' : 'badge-danger'}">${p.is_active ? '활성' : '비활성'}</span>
+              </div>
+              <div class="flex-between" style="margin-top: 12px; font-size: 13px;">
+                <span class="text-secondary">건당수수료</span>
+                <span class="text-mono">${won(p.commission_per_unit)}</span>
+              </div>
+              ${p.base_price ? `
+              <div class="flex-between" style="margin-top: 4px; font-size: 13px;">
+                <span class="text-secondary">기본판매가</span>
+                <span class="text-mono">${won(p.base_price)}</span>
+              </div>` : ''}
+              <div style="display: flex; gap: 8px; margin-top: 12px;">
+                <button class="btn btn-ghost btn-edit" data-id="${p.id}" style="font-size: 13px; padding: 8px;">수정</button>
+                <button class="btn btn-ghost btn-toggle" data-id="${p.id}" data-active="${p.is_active}" style="font-size: 13px; padding: 8px;">${p.is_active ? '비활성화' : '활성화'}</button>
+              </div>
+            </div>
+          `).join('') || '<p class="text-secondary" style="text-align:center; padding: 24px 0;">등록된 상품이 없습니다.</p>'}
+        </div>
+      `;
+
+      bindThousandsInput(document.getElementById('f-price'));
+      bindThousandsInput(document.getElementById('f-commission'));
+
+      renderNav('products');
+      bindEvents(products);
+    }
+
+    function renderNav(active) {
+      let nav = document.querySelector('.bottom-nav');
+      if (nav) nav.remove();
+      document.querySelector('.app-shell').insertAdjacentHTML('beforeend', renderAdminNav(active));
+    }
+
+    function bindEvents(products) {
+      document.getElementById('product-form').addEventListener('submit', onSubmit);
+
+      const cancelBtn = document.getElementById('cancel-edit');
+      if (cancelBtn) cancelBtn.addEventListener('click', () => { editingId = null; render(); });
+
+      document.querySelectorAll('.btn-edit').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const p = products.find(x => x.id === btn.dataset.id);
+          editingId = p.id;
+          render().then(() => {
+            document.getElementById('f-name').value = p.name;
+            document.getElementById('f-code').value = p.code;
+            document.getElementById('f-price').value = formatNumber(p.base_price);
+            document.getElementById('f-commission').value = formatNumber(p.commission_per_unit);
+            document.getElementById('product-form').scrollIntoView({ behavior: 'smooth' });
+          });
+        });
+      });
+
+      document.querySelectorAll('.btn-toggle').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const isActive = btn.dataset.active === 'true';
+          const { error } = await supabase
+            .from('products')
+            .update({ is_active: !isActive })
+            .eq('id', btn.dataset.id);
+          if (error) { showToast('변경 실패: ' + error.message, 'danger'); return; }
+          showToast('변경되었습니다', 'success');
+          render();
+        });
+      });
+    }
+
+    async function onSubmit(e) {
+      e.preventDefault();
+      const errEl = document.getElementById('form-error');
+      errEl.textContent = '';
+
+      const priceRaw = rawNumber(document.getElementById('f-price'));
+      const payload = {
+        name: document.getElementById('f-name').value.trim(),
+        code: document.getElementById('f-code').value.trim(),
+        base_price: priceRaw === '0' ? null : priceRaw,
+        commission_per_unit: rawNumber(document.getElementById('f-commission')),
+      };
+
+      let error, newProductId;
+      if (editingId) {
+        ({ error } = await supabase.from('products').update(payload).eq('id', editingId));
+      } else {
+        const stockEl = document.getElementById('f-stock');
+        const initialStock = stockEl ? Number(stockEl.value || 0) : 0;
+
+        const result = await supabase.from('products').insert(payload).select('id').single();
+        error = result.error;
+        newProductId = result.data?.id;
+
+        // 초기 재고 수량 입력 시 관리자 창고에 반영 (트리거로 0건 row는 이미 생성됨)
+        if (!error && newProductId && initialStock > 0) {
+          const { error: stockError } = await supabase
+            .from('admin_inventory')
+            .update({ quantity: initialStock })
+            .eq('product_id', newProductId);
+          if (stockError) showToast('상품은 등록됐지만 초기재고 반영 실패: ' + stockError.message, 'danger');
+        }
+      }
+
+      if (error) {
+        errEl.textContent = error.message.includes('duplicate')
+          ? '이미 존재하는 상품코드입니다.'
+          : '저장 실패: ' + error.message;
+        return;
+      }
+
+      showToast(editingId ? '수정되었습니다' : '등록되었습니다', 'success');
+      editingId = null;
+      render();
+    }
+
+    init();
+  </script>
+</body>
+</html>
