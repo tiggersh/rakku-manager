@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0f0f13" />
-  <title>파트너/분배 설정 - SH 라꾸 매니저</title>
+  <title>수익 분배 설정 - SH 라꾸 매니저</title>
   <link rel="stylesheet" href="/css/style.css" />
   <link rel="manifest" href="/manifest.json" />
 </head>
@@ -21,7 +21,7 @@
     import { renderAdminNav, renderHeader, showToast } from '/js/ui.js';
 
     const page = document.getElementById('page-content');
-    let partners = [];
+    let admins = [];
     let currentRule = null;
 
     async function init() {
@@ -32,56 +32,48 @@
     }
 
     async function loadData() {
-      const [pRes, rRes] = await Promise.all([
-        supabase.from('partners').select('*').order('name'),
+      const [aRes, rRes] = await Promise.all([
+        supabase.from('profiles').select('*').eq('role', 'admin').order('name'),
         supabase.from('profit_share_rules').select('*').is('product_id', null).order('created_at', { ascending: false }).limit(1),
       ]);
-      partners = pRes.data || [];
+      admins = aRes.data || [];
       currentRule = rRes.data?.[0] || null;
     }
 
-    function ruleValueFor(partnerId) {
+    function ruleValueFor(adminId) {
       if (!currentRule) return '';
-      const item = (currentRule.config || []).find(c => c.partner_id === partnerId);
+      const item = (currentRule.config || []).find(c => c.partner_id === adminId);
       return item ? item.value : '';
     }
 
     function render() {
       page.innerHTML = `
         <a href="/admin/settlements.html" class="text-secondary" style="font-size: 13px;">← 정산 관리</a>
-        ${renderHeader('파트너 / 분배 설정', '관리자 정산금을 나눠 가질 대상과 비율')}
+        ${renderHeader('수익 분배 설정', '관리자 정산금을 관리자들끼리 나누는 비율')}
 
-        <div class="card" style="margin-bottom: 16px;">
-          <h3 style="font-size: 15px; margin-bottom: 14px;">파트너 추가</h3>
-          <form id="partner-form" style="display: flex; gap: 8px; align-items: flex-end;">
-            <div class="field" style="flex: 1; margin-bottom: 0;">
-              <label>이름</label>
-              <input type="text" id="p-name" required placeholder="예: 나, 친구" />
-            </div>
-            <button type="submit" class="btn btn-primary" style="width: auto; padding: 12px 18px;">추가</button>
-          </form>
-        </div>
-
-        ${partners.length ? `
         <div class="card" style="margin-bottom: 16px;">
           <h3 style="font-size: 15px; margin-bottom: 4px;">분배 규칙</h3>
-          <p class="text-secondary" style="font-size: 12px; margin-bottom: 14px;">전체 상품 공통 규칙입니다. 저장하면 새 규칙으로 갱신되고, 이후 분배부터 적용됩니다.</p>
+          <p class="text-secondary" style="font-size: 12px; margin-bottom: 14px;">
+            현재 관리자 계정 ${admins.length}명 기준입니다. 저장하면 새 규칙으로 갱신되고, 이후 분배부터 적용됩니다.
+          </p>
 
           <form id="rule-form">
             <div class="field">
               <label>방식</label>
               <select id="r-method">
                 <option value="percentage" ${currentRule?.method === 'percentage' ? 'selected' : ''}>퍼센트 (%)</option>
-                <option value="ratio" ${currentRule?.method === 'ratio' ? 'selected' : ''}>비율 (3:1 같은 형태)</option>
+                <option value="ratio" ${currentRule?.method === 'ratio' ? 'selected' : ''}>비율 (숫자 그대로, n분의1이면 전부 1)</option>
               </select>
             </div>
 
-            ${partners.map(p => `
+            ${admins.map(a => `
               <div class="field">
-                <label>${p.name}</label>
-                <input type="number" step="0.01" min="0" class="partner-value" data-partner="${p.id}" value="${ruleValueFor(p.id)}" placeholder="예: 75 또는 3" />
+                <label>${a.name}</label>
+                <input type="number" step="0.01" min="0" class="admin-value" data-admin="${a.id}" value="${ruleValueFor(a.id)}" placeholder="예: 33.33 또는 1" />
               </div>
             `).join('')}
+
+            <button type="button" id="btn-equal" class="btn btn-ghost" style="margin-bottom: 14px;">균등 분배로 자동 입력 (${admins.length}명 n분의1)</button>
 
             <p class="error-text" id="rule-error"></p>
             <button type="submit" class="btn btn-primary">규칙 저장</button>
@@ -91,34 +83,36 @@
           <div class="card" style="margin-top: 14px; background: var(--accent-dim); border-color: var(--accent);">
             <div style="font-size: 12px; color: var(--accent-text); margin-bottom: 6px;">현재 적용중인 규칙</div>
             ${(currentRule.config || []).map(c => {
-              const partner = partners.find(p => p.id === c.partner_id);
-              return `<div class="flex-between" style="font-size: 12px; padding: 2px 0;"><span>${partner?.name || '-'}</span><span>${c.value}${currentRule.method === 'percentage' ? '%' : ''}</span></div>`;
+              const admin = admins.find(a => a.id === c.partner_id);
+              return `<div class="flex-between" style="font-size: 12px; padding: 2px 0;"><span>${admin?.name || '(삭제된 계정)'}</span><span>${c.value}${currentRule.method === 'percentage' ? '%' : ''}</span></div>`;
             }).join('')}
           </div>` : ''}
         </div>
-        ` : '<p class="text-secondary" style="text-align:center; padding: 24px 0;">먼저 파트너를 추가해주세요.</p>'}
       `;
 
       let nav = document.querySelector('.bottom-nav');
       if (nav) nav.remove();
       document.querySelector('.app-shell').insertAdjacentHTML('beforeend', renderAdminNav('settlements'));
 
-      document.getElementById('partner-form').addEventListener('submit', onAddPartner);
-      const ruleForm = document.getElementById('rule-form');
-      if (ruleForm) ruleForm.addEventListener('submit', onSaveRule);
+      document.getElementById('rule-form').addEventListener('submit', onSaveRule);
+      document.getElementById('btn-equal').addEventListener('click', onEqualFill);
     }
 
-    async function onAddPartner(e) {
-      e.preventDefault();
-      const name = document.getElementById('p-name').value.trim();
-      if (!name) return;
+    function onEqualFill() {
+      const method = document.getElementById('r-method').value;
+      const n = admins.length;
+      if (!n) return;
 
-      const { error } = await supabase.from('partners').insert({ name });
-      if (error) { showToast('추가 실패: ' + error.message, 'danger'); return; }
-
-      showToast('파트너가 추가되었습니다', 'success');
-      await loadData();
-      render();
+      document.querySelectorAll('.admin-value').forEach((input, i) => {
+        if (method === 'percentage') {
+          // 마지막 사람에게 나머지 소수점 몰아줘서 합 100 정확히 맞춤
+          const base = Math.floor((100 / n) * 100) / 100;
+          const isLast = i === n - 1;
+          input.value = isLast ? (100 - base * (n - 1)).toFixed(2) : base;
+        } else {
+          input.value = 1;
+        }
+      });
     }
 
     async function onSaveRule(e) {
@@ -128,9 +122,9 @@
 
       const method = document.getElementById('r-method').value;
       const config = [];
-      document.querySelectorAll('.partner-value').forEach(input => {
+      document.querySelectorAll('.admin-value').forEach(input => {
         const value = Number(input.value);
-        if (value > 0) config.push({ partner_id: input.dataset.partner, value });
+        if (value > 0) config.push({ partner_id: input.dataset.admin, value });
       });
 
       if (!config.length) {
@@ -140,7 +134,7 @@
 
       if (method === 'percentage') {
         const sum = config.reduce((s, c) => s + c.value, 0);
-        if (Math.round(sum) !== 100) {
+        if (Math.round(sum * 100) / 100 !== 100) {
           errEl.textContent = `퍼센트 합계는 100이어야 합니다 (현재 ${sum}).`;
           return;
         }
